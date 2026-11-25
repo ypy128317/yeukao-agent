@@ -1,0 +1,52 @@
+name: Deploy yuekao-agent to Aliyun
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: yuekao-agent-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted]
+
+    steps:
+      - name: 1. 拉取最新代码
+        run: |
+          set -e
+          export HOME=/root
+          GIT="git -c safe.directory=/opt/yuekao-agent"
+          cd /opt/yuekao-agent || { echo "部署目录不存在"; exit 1; }
+          [ -d .git ] || $GIT init -q
+          $GIT remote get-url origin >/dev/null 2>&1 || \
+            $GIT remote add origin ${{ github.server_url }}/${{ github.repository }}.git
+          for i in 1 2 3; do
+            $GIT fetch origin main && break
+            sleep 10
+          done
+          $GIT reset --hard origin/main
+          test -f .env || { echo ".env 丢失，停止部署"; exit 1; }
+
+      - name: 2. 校验配置
+        run: |
+          set -e
+          cd /opt/yuekao-agent
+          docker compose config -q
+          echo "配置校验通过"
+
+      - name: 3. 重建容器
+        run: |
+          set -e
+          cd /opt/yuekao-agent
+          docker compose up -d --build yuekao-agent
+
+      - name: 4. 健康检查
+        run: |
+          set -e
+          sleep 15
+          docker ps --format '{{.Names}}  {{.Status}}' | grep yuekao-agent
+          curl -fsS -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:8004/
+          echo "部署完成"
